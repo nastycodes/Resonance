@@ -563,7 +563,10 @@ pub(super) fn send_message_work(
                 }
             }
             match api.send_relay_message(&token, &peer.id, group_id, &envelope) {
-                Ok(()) => {
+                Ok(queue_sequence) => {
+                    if let Err(error) = store.set_message_queue_sequence(&message.id, queue_sequence) {
+                        failures.push(format!("@{}: {}", peer.username, error));
+                    }
                     relay_deliveries += 1;
                     if conversation.is_group() {
                         let Some(delivery) = group_deliveries
@@ -776,6 +779,7 @@ pub(super) fn same_group_members(left: &[User], right: &[User]) -> bool {
 pub(super) fn process_mls_relay_body(
     body: &str,
     envelope: &relay::RelayEnvelope,
+    queue_sequence: Option<u64>,
     sender_id: &str,
     account_id: &str,
     private_key: &[u8],
@@ -1040,6 +1044,7 @@ pub(super) fn process_mls_relay_body(
         &envelope.sent_at,
         false,
     );
+    message.queue_sequence = queue_sequence;
     message.attachments = attachments;
     if conversation.is_group() {
         store.add_group_message_with_mls_snapshot(
@@ -1146,7 +1151,7 @@ pub(super) fn retry_pending_direct_messages(
         };
         if conversation.is_group() && !verified_group_ids.contains(&conversation.id) {
             match verify_group_roster(api, token, store, account_id, private_key, conversation) {
-                Ok(()) => {
+                Ok(_) => {
                     verified_group_ids.insert(conversation.id.clone());
                 }
                 Err(error) => {
@@ -1224,7 +1229,7 @@ pub(super) fn retry_pending_direct_messages(
                     }
                 };
                 match api.send_relay_message(token, &peer.id, group_id, &envelope) {
-                    Ok(()) => {
+                    Ok(_) => {
                         delivery.api_accepted = true;
                         delivery.api_failure_permanent = false;
                         if delivery.state != RecipientDeliveryState::Delivered {
@@ -1324,7 +1329,7 @@ pub(super) fn retry_pending_direct_messages(
                         .ok_or_else(|| "The message has not been encrypted.".to_string())?,
                 )?;
                 match api.send_relay_message(token, &peer.id, group_id, &envelope) {
-                    Ok(()) => relay_delivered = true,
+                    Ok(_) => relay_delivered = true,
                     Err(error) => {
                         permanently_failed |= !conversation.is_group()
                             && matches!(error.status, Some(400 | 403 | 404 | 409));
@@ -1462,6 +1467,7 @@ pub(super) fn poll_account(
             &queued.sender_public_key,
             &queued.envelope,
             Some(&queued.lease_token),
+            queued.queue_sequence,
         ) {
             errors.push(error);
             if let Err(error) = api.release_relay_message(
@@ -1670,11 +1676,20 @@ pub(super) fn poll_account(
             }
         };
         let received = if already_received {
+            if let Some(queue_sequence) = queued.queue_sequence
+                && let Err(error) = store.set_message_queue_sequence(
+                    &queued.envelope.message_id,
+                    queue_sequence,
+                )
+            {
+                errors.push(error);
+            }
             Ok(None)
         } else {
             process_mls_relay_body(
                 &body,
                 &queued.envelope,
+                queued.queue_sequence,
                 &queued.sender_public_key,
                 &account_id,
                 private_key.as_slice(),

@@ -211,7 +211,15 @@ fn format_conversation_time(timestamp: &str) -> String {
     let parsed = timestamp
         .parse::<i64>()
         .ok()
-        .and_then(|seconds| chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0))
+        .map(|numeric| {
+            let seconds = if numeric.abs() >= 100_000_000_000 {
+                numeric.div_euclid(1000)
+            } else {
+                numeric
+            };
+            chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0)
+        })
+        .flatten()
         .or_else(|| {
             chrono::DateTime::parse_from_rfc3339(timestamp)
                 .ok()

@@ -104,6 +104,7 @@ function handle_message_send_routes(PDO $database, string $method, string $path)
             if ($existingSender !== false && $existingSender !== $account['account_id']) {
                 throw new ApiError(409, 'The message identifier is already in use.');
             }
+            $queueSequence = null;
             if ($existingSender === false) {
                 $queueSize = $database->prepare(
                     'SELECT COUNT(*) FROM resonance_relay_messages WHERE recipient_id = ?',
@@ -124,6 +125,15 @@ function handle_message_send_routes(PDO $database, string $method, string $path)
                     json_encode($envelope, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
                 ]);
             }
+            $queueSequenceQuery = $database->prepare(
+                'SELECT queue_sequence FROM resonance_relay_messages
+                 WHERE recipient_id = ? AND message_id = ?',
+            );
+            $queueSequenceQuery->execute([
+                $recipient['account_id'],
+                $envelope['message_id'],
+            ]);
+            $queueSequence = (int) $queueSequenceQuery->fetchColumn();
             $receipt = $database->prepare(
                 'INSERT IGNORE INTO resonance_message_receipts
                  (sender_id, recipient_id, message_id, sent_at, group_id,
@@ -190,7 +200,7 @@ function handle_message_send_routes(PDO $database, string $method, string $path)
         if ($groupId !== null) {
             $database->commit();
         }
-        respond_empty(202);
+        respond(202, ['queue_sequence' => $queueSequence]);
     }
 
 }

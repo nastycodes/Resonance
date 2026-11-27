@@ -19,6 +19,7 @@ function handle_message_delivery_routes(PDO $database, string $method, string $p
             }
         $messages = $database->prepare(
             'SELECT a.public_key AS sender_public_key, m.envelope_json, m.message_id,
+                    m.queue_sequence,
                     d.lease_token, d.attempt_count
              FROM resonance_relay_messages m
              JOIN resonance_message_device_deliveries d
@@ -80,6 +81,7 @@ function handle_message_delivery_routes(PDO $database, string $method, string $p
                 'sender_public_key' => $message['sender_public_key'],
                 'envelope' => $envelope,
                 'lease_token' => $leaseToken,
+                'queue_sequence' => (int) $message['queue_sequence'],
             ];
         }
             $database->commit();

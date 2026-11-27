@@ -908,7 +908,7 @@ impl AppState {
                 .map_err(|error| error.message)
         })();
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 self.device_pairing_verification_input.clear();
                 self.set_toast(
                     Some("Device authorized. You can now securely send history to it.".into()),
@@ -992,7 +992,7 @@ impl AppState {
             Ok::<(), String>(())
         })();
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 self.device_rename_target = None;
                 self.device_name_input.clear();
                 self.set_toast(Some("Device name updated.".into()), cx);
@@ -1012,7 +1012,7 @@ impl AppState {
                     .map_err(|error| error.message)
             });
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 self.set_toast(
                     Some(
                         "Device revoked; its future queue and history access are disabled.".into(),
@@ -1448,7 +1448,7 @@ impl AppState {
                     .map_err(|error| error.message)
             })();
             match result {
-                Ok(()) => {
+                Ok(_) => {
                     if let Err(error) = store.mark_mls_welcome_queued(&conversation.id, &peer.id) {
                         failed_invites.push(format!("@{}: {error}", peer.username));
                     }

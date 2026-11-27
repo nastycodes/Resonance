@@ -1,7 +1,10 @@
 use crate::{
     app_state::{AppState, PendingConfirmation},
     components::{avatar, button, card, icon::IconName, menu, message},
-    models::{conversation::Conversation, message::RecipientDeliveryState},
+    models::{
+        conversation::Conversation,
+        message::{Message, RecipientDeliveryState},
+    },
     services::attachment::{self, AttachmentKind, AttachmentMetadata},
     theme::{colors, spacing},
 };
@@ -10,6 +13,66 @@ use gpui::{
     Context, Div, IntoElement, MouseButton, TextRun, Window, deferred, div, font,
     px, relative, rgb,
 };
+
+fn parse_timestamp(timestamp: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(numeric) = timestamp.parse::<i64>() {
+        let seconds = if numeric.abs() >= 100_000_000_000 {
+            numeric.div_euclid(1000)
+        } else {
+            numeric
+        };
+        if let Some(datetime) = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0) {
+            return Some(datetime);
+        }
+    }
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|datetime| datetime.with_timezone(&chrono::Utc))
+}
+
+fn message_order_cmp(left: &Message, right: &Message) -> std::cmp::Ordering {
+    match (left.queue_sequence, right.queue_sequence) {
+        (Some(left_queue), Some(right_queue)) => left_queue.cmp(&right_queue),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => parse_timestamp(&left.sent_at)
+            .map(|value| value.timestamp())
+            .unwrap_or(i64::MIN)
+            .cmp(
+                &parse_timestamp(&right.sent_at)
+                    .map(|value| value.timestamp())
+                    .unwrap_or(i64::MIN),
+            ),
+    }
+}
+
+#[cfg(test)]
+mod message_order_tests {
+    use super::{Message, message_order_cmp};
+
+    fn message(id: &str, queue_sequence: u64) -> Message {
+        let mut message =
+            Message::new(id, "conversation", "author", "Author", id, "1", false);
+        message.queue_sequence = Some(queue_sequence);
+        message
+    }
+
+    #[test]
+    fn alternating_sender_messages_follow_server_queue_sequence() {
+        let mut messages = vec![
+            message("b2", 4),
+            message("a1", 1),
+            message("b1", 3),
+            message("a2", 2),
+        ];
+        messages.sort_by(message_order_cmp);
+        let ids = messages
+            .iter()
+            .map(|message| message.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["a1", "a2", "b1", "b2"]);
+    }
+}
 
 pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> impl IntoElement {
     let selected = state
@@ -178,18 +241,6 @@ pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> 
         .p(px(spacing::PANEL_GUTTER))
         .overflow_y_scroll()
         .track_scroll(&state.message_scroll_handle);
-    fn parse_timestamp(timestamp: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-        timestamp
-            .parse::<i64>()
-            .ok()
-            .and_then(|seconds| chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0))
-            .or_else(|| {
-                chrono::DateTime::parse_from_rfc3339(timestamp)
-                    .ok()
-                    .map(|datetime| datetime.with_timezone(&chrono::Utc))
-            })
-    }
-
     fn format_timestamp(timestamp: &str) -> String {
         parse_timestamp(timestamp)
             .map(|datetime| datetime.format("%d.%m.%Y · %H:%M:%S UTC").to_string())
@@ -223,7 +274,7 @@ pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> 
             .unwrap_or_else(|| ("unknown".into(), "Date unavailable".into()))
     }
 
-    messages.sort_by_key(|message| parse_timestamp(&message.sent_at));
+    messages.sort_by(message_order_cmp);
     let mut current_day: Option<String> = None;
     for message in messages {
         let (day_key, day_label) = message_day(&message.sent_at);

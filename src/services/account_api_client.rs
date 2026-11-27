@@ -295,6 +295,8 @@ pub struct PendingRelayMessage {
     pub sender_public_key: String,
     pub envelope: RelayEnvelope,
     pub lease_token: String,
+    #[serde(default)]
+    pub queue_sequence: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1007,7 +1009,7 @@ impl AccountApiClient {
         recipient_public_key: &str,
         group_id: Option<&str>,
         envelope: &RelayEnvelope,
-    ) -> Result<(), AccountApiError> {
+    ) -> Result<u64, AccountApiError> {
         let response = self
             .device_authorized(self.http.post(self.url("/v1/messages")), token)?
             .json(&RelayMessageRequest {
@@ -1019,7 +1021,13 @@ impl AccountApiClient {
             .map_err(request_error)?;
         let status = response.status();
         if status.is_success() {
-            Ok(())
+            let body = response.json::<serde_json::Value>().map_err(request_error)?;
+            body.get("queue_sequence")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| AccountApiError {
+                    status: Some(status.as_u16()),
+                    message: "The relay response did not include a queue sequence.".into(),
+                })
         } else {
             Err(response_error(status.as_u16(), response))
         }

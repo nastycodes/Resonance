@@ -79,6 +79,8 @@ pub struct Message {
     pub body: String,
     #[serde(alias = "time")]
     pub sent_at: String,
+    #[serde(default)]
+    pub queue_sequence: Option<u64>,
     pub is_mine: bool,
     pub delivery_state: String,
     #[serde(default)]
@@ -116,6 +118,7 @@ impl Message {
             author_name: author_name.to_string(),
             body: body.to_string(),
             sent_at: sent_at.to_string(),
+            queue_sequence: None,
             is_mine,
             delivery_state: if is_mine {
                 "not_delivered".to_string()

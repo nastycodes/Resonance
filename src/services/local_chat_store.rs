@@ -29,6 +29,33 @@ const NONCE_LEN: usize = 12;
 const MAX_ATTACHMENT_CIPHERTEXT_BYTES: usize = crate::services::attachment::MAX_ATTACHMENT_BYTES;
 const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
 
+fn timestamp_sort_key(timestamp: &str) -> Option<i64> {
+    if let Ok(numeric) = timestamp.parse::<i64>() {
+        let seconds = if numeric.abs() >= 100_000_000_000 {
+            numeric.div_euclid(1000)
+        } else {
+            numeric
+        };
+        if let Some(datetime) = chrono::DateTime::<chrono::Utc>::from_timestamp(seconds, 0) {
+            return Some(datetime.timestamp());
+        }
+    }
+    chrono::DateTime::parse_from_rfc3339(timestamp)
+        .ok()
+        .map(|datetime| datetime.timestamp())
+}
+
+fn sort_conversations_newest_first(conversations: &mut [Conversation]) {
+    conversations.sort_by(|left, right| {
+        let left_key = timestamp_sort_key(&left.updated_at);
+        let right_key = timestamp_sort_key(&right.updated_at);
+        right_key
+            .unwrap_or(i64::MIN)
+            .cmp(&left_key.unwrap_or(i64::MIN))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
 fn refresh_group_message_state(message: &mut Message) {
     if message
         .group_deliveries
@@ -141,6 +168,8 @@ pub struct PendingInboundRelay {
     pub envelope: RelayEnvelope,
     #[serde(default)]
     pub lease_token: Option<String>,
+    #[serde(default)]
+    pub queue_sequence: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,7 +319,7 @@ impl LocalChatStore {
             .lock()
             .map(|data| {
                 let mut conversations = data.conversations.clone();
-                conversations.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+                sort_conversations_newest_first(&mut conversations);
                 conversations
             })
             .map_err(|_| "Local chat history is unavailable.".into())
@@ -303,11 +332,31 @@ impl LocalChatStore {
             .map_err(|_| "Local chat history is unavailable.".into())
     }
 
+    pub fn set_message_queue_sequence(
+        &self,
+        message_id: &str,
+        queue_sequence: u64,
+    ) -> Result<(), String> {
+        let mut data = self
+            .data
+            .lock()
+            .map_err(|_| "Local chat history is unavailable.".to_string())?;
+        let Some(message) = data.messages.iter_mut().find(|message| message.id == message_id) else {
+            return Ok(());
+        };
+        if message.queue_sequence == Some(queue_sequence) {
+            return Ok(());
+        }
+        message.queue_sequence = Some(queue_sequence);
+        self.persist(&data)
+    }
+
     pub fn save_pending_inbound_relay(
         &self,
         sender_public_key: &str,
         envelope: &RelayEnvelope,
         lease_token: Option<&str>,
+        queue_sequence: Option<u64>,
     ) -> Result<(), String> {
         if envelope.message_id.len() != 32
             || !envelope
@@ -343,6 +392,7 @@ impl LocalChatStore {
                 sender_public_key: sender_public_key.to_string(),
                 envelope: envelope.clone(),
                 lease_token: lease_token.map(str::to_string),
+                queue_sequence,
             },
         );
         self.persist(&data)
@@ -1857,8 +1907,7 @@ impl LocalChatStore {
         if let Some(snapshot) = mls_snapshot {
             data.mls_storage = snapshot;
         }
-        data.conversations
-            .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        sort_conversations_newest_first(&mut data.conversations);
         self.persist(&data)
     }
 
@@ -1911,8 +1960,7 @@ impl LocalChatStore {
         if let Some(snapshot) = mls_snapshot {
             data.mls_storage = snapshot;
         }
-        data.conversations
-            .sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        sort_conversations_newest_first(&mut data.conversations);
         self.persist(&data)
     }
 
@@ -2594,10 +2642,10 @@ mod tests {
             signature: "f".repeat(128),
         };
         store
-            .save_pending_inbound_relay(&envelope.sender_id, &envelope, None)
+            .save_pending_inbound_relay(&envelope.sender_id, &envelope, None, None)
             .unwrap();
         store
-            .save_pending_inbound_relay(&envelope.sender_id, &envelope, None)
+            .save_pending_inbound_relay(&envelope.sender_id, &envelope, None, None)
             .unwrap();
         drop(store);
 
@@ -2608,6 +2656,7 @@ mod tests {
                 sender_public_key: envelope.sender_id.clone(),
                 envelope: envelope.clone(),
                 lease_token: None,
+                queue_sequence: None,
             }]
         );
         restored
