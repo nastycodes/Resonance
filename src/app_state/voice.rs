@@ -145,7 +145,6 @@ impl AppState {
         cx.notify();
     }
 
-
     pub fn start_voice_call_with_friend(&mut self, peer_id: &str, cx: &mut Context<Self>) {
         if !self.friends.iter().any(|friend| friend.id == peer_id) {
             self.set_toast(

@@ -420,6 +420,7 @@ pub struct AppState {
     pub invite_code_input: String,
     pub password_input: String,
     pub remember_me: bool,
+    pub auth_in_progress: bool,
     pub profile_name_input: String,
     pub current_password_input: String,
     pub new_password_input: String,
@@ -461,6 +462,7 @@ pub struct AppState {
     pub friend_requests_scroll_handle: ScrollHandle,
     pub message: Option<String>,
     toast_generation: u64,
+    remote_data_generation: u64,
     last_poll_error: Option<String>,
     pub notifications_enabled: bool,
     pub presence: String,
@@ -584,6 +586,7 @@ impl AppState {
             invite_code_input: String::new(),
             password_input: String::new(),
             remember_me: false,
+            auth_in_progress: false,
             profile_name_input: String::new(),
             current_password_input: String::new(),
             new_password_input: String::new(),
@@ -625,6 +628,7 @@ impl AppState {
             friend_requests_scroll_handle: ScrollHandle::new(),
             message: None,
             toast_generation: 0,
+            remote_data_generation: 0,
             last_poll_error: None,
             notifications_enabled: true,
             presence: "Online".into(),
@@ -2072,116 +2076,174 @@ impl AppState {
                 return;
             }
         };
-        if let (Some(identity), Some(store)) = (&self.identity, &self.local_chat) {
-            match MlsService::generate_key_packages(
-                store,
-                &identity.user.id,
-                identity.private_key(),
-                10,
-            ) {
-                Ok(key_packages) => {
-                    if let Err(error) = api.publish_mls_key_packages(&token, &key_packages) {
-                        let status = error
-                            .status
-                            .map(|status| format!(" (HTTP {status})"))
-                            .unwrap_or_default();
-                        self.set_toast(
-                            Some(format!(
-                                "Could not publish encrypted conversation credentials: {}{}",
-                                error.message, status
-                            )),
-                            cx,
-                        );
-                    }
+        let update_token = token.clone();
+        self.remote_data_generation = self.remote_data_generation.wrapping_add(1);
+        let update_generation = self.remote_data_generation;
+        let identity = self.identity.clone();
+        let local_chat = self.local_chat.clone();
+        let transport_port = self.peer_transport.as_ref().map(PeerTransport::port);
+        let startup_error = self.startup_error.clone();
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let results = background
+                .spawn(async move {
+                    let key_package_error =
+                        match (identity.as_ref(), local_chat.as_ref()) {
+                            (Some(identity), Some(store)) => {
+                                match MlsService::generate_key_packages(
+                                    store,
+                                    &identity.user.id,
+                                    identity.private_key(),
+                                    10,
+                                ) {
+                                    Ok(key_packages) => api
+                                        .publish_mls_key_packages(&token, &key_packages)
+                                        .err()
+                                        .map(|error| {
+                                            let status = error
+                                                .status
+                                                .map(|status| format!(" (HTTP {status})"))
+                                                .unwrap_or_default();
+                                            format!(
+                                                "Could not publish encrypted conversation credentials: {}{}",
+                                                error.message, status
+                                            )
+                                        }),
+                                    Err(error) => Some(error),
+                                }
+                            }
+                            _ => None,
+                        };
+                    let presence_error = match transport_port {
+                        Some(port) => api.publish_presence(&token, port).err().map(|error| {
+                            format!(
+                                "Could not publish the direct-chat endpoint: {}",
+                                error.message
+                            )
+                        }),
+                        None => Some(
+                            startup_error.unwrap_or_else(|| {
+                                "Direct peer networking is unavailable.".into()
+                            }),
+                        ),
+                    };
+                    let friends = api.friends(&token);
+                    let incoming_requests = api.friend_requests(&token);
+                    let outgoing_requests = api.outgoing_friend_requests(&token);
+                    let conversations = local_chat
+                        .as_ref()
+                        .map(LocalChatStore::conversations);
+                    let settings = api.settings(&token);
+                    (
+                        key_package_error,
+                        presence_error,
+                        friends,
+                        incoming_requests,
+                        outgoing_requests,
+                        conversations,
+                        settings,
+                    )
+                })
+                .await;
+
+            let _ = this.update(cx, |state, cx| {
+                if state.session_token.as_deref() != Some(&update_token)
+                    || state.remote_data_generation != update_generation
+                {
+                    return;
                 }
-                Err(error) => self.set_toast(Some(error), cx),
-            }
-        }
-        if let Some(transport) = &self.peer_transport {
-            if let Err(error) = api.publish_presence(&token, transport.port()) {
-                self.set_toast(
-                    Some(format!(
-                        "Could not publish the direct-chat endpoint: {}",
-                        error.message
-                    )),
-                    cx,
-                );
-            }
-        } else {
-            self.set_toast(
-                Some(
-                    self.startup_error
-                        .clone()
-                        .unwrap_or_else(|| "Direct peer networking is unavailable.".into()),
-                ),
-                cx,
-            );
-        }
-        match api.friends(&token) {
-            Ok(friends) => {
-                self.friends = friends;
-                if let Some(store) = &self.local_chat {
-                    match store.sync_friends(&self.friends) {
-                        Ok(new_friends) if notify_new_friends && !new_friends.is_empty() => {
-                            self.set_toast(
-                                Some(format!(
-                                    "New friend(s): {}.",
-                                    new_friends
-                                        .iter()
-                                        .map(|friend| friend.name.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(", ")
-                                )),
-                                cx,
-                            );
+                let (
+                    key_package_error,
+                    presence_error,
+                    friends,
+                    incoming_requests,
+                    outgoing_requests,
+                    conversations,
+                    settings,
+                ) = results;
+                if let Some(error) = key_package_error {
+                    state.set_toast(Some(error), cx);
+                }
+                if let Some(error) = presence_error {
+                    state.set_toast(Some(error), cx);
+                }
+                match friends {
+                    Ok(friends) => {
+                        state.friends = friends;
+                        if let Some(store) = &state.local_chat {
+                            match store.sync_friends(&state.friends) {
+                                Ok(new_friends)
+                                    if notify_new_friends && !new_friends.is_empty() =>
+                                {
+                                    state.set_toast(
+                                        Some(format!(
+                                            "New friend(s): {}.",
+                                            new_friends
+                                                .iter()
+                                                .map(|friend| friend.name.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(", ")
+                                        )),
+                                        cx,
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(error) => state.set_toast(Some(error), cx),
+                            }
                         }
-                        Ok(_) => {}
-                        Err(error) => self.set_toast(Some(error), cx),
+                        let configured = match (
+                            &state.peer_transport,
+                            &state.identity,
+                            &state.local_chat,
+                        ) {
+                            (Some(transport), Some(identity), Some(store)) => {
+                                transport.configure(identity, &state.friends, store.clone())
+                            }
+                            _ => Ok(()),
+                        };
+                        if let Err(error) = configured {
+                            state.set_toast(Some(error), cx);
+                        }
+                    }
+                    Err(error) => state.set_toast(Some(error.message), cx),
+                }
+                match incoming_requests {
+                    Ok(requests) => state.incoming_friend_requests = requests,
+                    Err(error) => state.set_toast(Some(error.message), cx),
+                }
+                match outgoing_requests {
+                    Ok(requests) => state.outgoing_friend_requests = requests,
+                    Err(error) => state.set_toast(Some(error.message), cx),
+                }
+                if let Some(conversations) = conversations {
+                    match conversations {
+                        Ok(conversations) => state.conversations = conversations,
+                        Err(error) => state.set_toast(Some(error), cx),
                     }
                 }
-                let configured = match (&self.peer_transport, &self.identity, &self.local_chat) {
-                    (Some(transport), Some(identity), Some(store)) => {
-                        transport.configure(identity, &self.friends, store.clone())
+                match settings {
+                    Ok(settings) => {
+                        state.notifications_enabled = settings
+                            .get("notifications")
+                            .map(|value| value == "true")
+                            .unwrap_or(true);
+                        state.presence = settings
+                            .get("presence")
+                            .filter(|value| {
+                                matches!(value.as_str(), "Online" | "Away" | "Do not disturb")
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| "Online".into());
+                        if let Some(user) = state.current_user.as_mut() {
+                            user.status = state.presence.clone();
+                        }
                     }
-                    _ => Ok(()),
-                };
-                if let Err(error) = configured {
-                    self.set_toast(Some(error), cx);
+                    Err(error) => state.set_toast(Some(error.message), cx),
                 }
-            }
-            Err(error) => self.set_toast(Some(error.message), cx),
-        }
-        match api.friend_requests(&token) {
-            Ok(requests) => self.incoming_friend_requests = requests,
-            Err(error) => self.set_toast(Some(error.message), cx),
-        }
-        match api.outgoing_friend_requests(&token) {
-            Ok(requests) => self.outgoing_friend_requests = requests,
-            Err(error) => self.set_toast(Some(error.message), cx),
-        }
-        if let Some(store) = &self.local_chat {
-            match store.conversations() {
-                Ok(conversations) => self.conversations = conversations,
-                Err(error) => self.set_toast(Some(error), cx),
-            }
-        }
-        match api.settings(&token) {
-            Ok(settings) => {
-                self.notifications_enabled = settings
-                    .get("notifications")
-                    .map(|value| value == "true")
-                    .unwrap_or(true);
-                self.presence = settings
-                    .get("presence")
-                    .filter(|value| matches!(value.as_str(), "Online" | "Away" | "Do not disturb"))
-                    .cloned()
-                    .unwrap_or_else(|| "Online".into());
-                if let Some(user) = self.current_user.as_mut() {
-                    user.status = self.presence.clone();
-                }
-            }
-            Err(error) => self.set_toast(Some(error.message), cx),
-        }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub fn add_friend(&mut self, cx: &mut Context<Self>) {

@@ -10,8 +10,7 @@ use crate::{
 };
 use gpui::prelude::*;
 use gpui::{
-    Context, Div, IntoElement, MouseButton, TextRun, Window, deferred, div, font,
-    px, relative, rgb,
+    Context, Div, IntoElement, MouseButton, TextRun, Window, deferred, div, font, px, relative, rgb,
 };
 
 fn parse_timestamp(timestamp: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -51,8 +50,7 @@ mod message_order_tests {
     use super::{Message, message_order_cmp};
 
     fn message(id: &str, queue_sequence: u64) -> Message {
-        let mut message =
-            Message::new(id, "conversation", "author", "Author", id, "1", false);
+        let mut message = Message::new(id, "conversation", "author", "Author", id, "1", false);
         message.queue_sequence = Some(queue_sequence);
         message
     }
@@ -195,24 +193,20 @@ pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> 
                         .child(
                             div()
                                 .text_xs()
-                                .text_color(
-                                    if group_conversation {
-                                        rgb(colors::MUTED)
-                                    } else if peer_status == "Online" {
-                                        rgb(colors::GREEN)
-                                    } else {
-                                        rgb(colors::MUTED)
-                                    }
-                                )
-                                .child(
-                                    if group_conversation {
-                                        format!("Group · {} members", conversation.members.len())
-                                    } else if peer_status == "Online" {
-                                        "Online".to_string()
-                                    } else {
-                                        "Offline".to_string()
-                                    },
-                                )
+                                .text_color(if group_conversation {
+                                    rgb(colors::MUTED)
+                                } else if peer_status == "Online" {
+                                    rgb(colors::GREEN)
+                                } else {
+                                    rgb(colors::MUTED)
+                                })
+                                .child(if group_conversation {
+                                    format!("Group · {} members", conversation.members.len())
+                                } else if peer_status == "Online" {
+                                    "Online".to_string()
+                                } else {
+                                    "Offline".to_string()
+                                }),
                         ),
                 )
                 .child(
@@ -890,21 +884,17 @@ fn conversation_call_panel(
         .items_center()
         .gap_1()
         .cursor_pointer()
-        .aria_label(
-            if call.muted {
-                "Unmute microphone"
-            } else {
-                "Mute microphone"
-            }
-        )
+        .aria_label(if call.muted {
+            "Unmute microphone"
+        } else {
+            "Mute microphone"
+        })
         .tab_index(0)
-        .child(button::clear_icon(
-            if call.muted {
-                IconName::MicrophoneOff
-            } else {
-                IconName::Microphone
-            }
-        ))
+        .child(button::clear_icon(if call.muted {
+            IconName::MicrophoneOff
+        } else {
+            IconName::Microphone
+        }))
         .on_click(cx.listener(|state, _, _, cx| state.toggle_voice_call_mute(cx)));
     let leave_control = div()
         .id("conversation-leave-voice-call")
@@ -917,7 +907,7 @@ fn conversation_call_panel(
         .tab_index(0)
         .child(button::destructive_icon_button(IconName::PhoneOff))
         .on_click(cx.listener(|state, _, _, cx| state.end_voice_call(true, cx)));
-    
+
     let controls = div()
         .flex()
         .items_center()
@@ -935,7 +925,7 @@ fn conversation_call_panel(
                 .text_sm()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(rgb(colors::TEXT))
-                .child(status.to_string() + if call.connected { "" } else { "…" },),
+                .child(status.to_string() + if call.connected { "" } else { "…" }),
         )
         .child(
             div()

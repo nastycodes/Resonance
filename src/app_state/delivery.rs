@@ -564,7 +564,9 @@ pub(super) fn send_message_work(
             }
             match api.send_relay_message(&token, &peer.id, group_id, &envelope) {
                 Ok(queue_sequence) => {
-                    if let Err(error) = store.set_message_queue_sequence(&message.id, queue_sequence) {
+                    if let Err(error) =
+                        store.set_message_queue_sequence(&message.id, queue_sequence)
+                    {
                         failures.push(format!("@{}: {}", peer.username, error));
                     }
                     relay_deliveries += 1;
@@ -1677,10 +1679,8 @@ pub(super) fn poll_account(
         };
         let received = if already_received {
             if let Some(queue_sequence) = queued.queue_sequence
-                && let Err(error) = store.set_message_queue_sequence(
-                    &queued.envelope.message_id,
-                    queue_sequence,
-                )
+                && let Err(error) =
+                    store.set_message_queue_sequence(&queued.envelope.message_id, queue_sequence)
             {
                 errors.push(error);
             }

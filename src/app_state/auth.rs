@@ -2,6 +2,9 @@ use super::*;
 
 impl AppState {
     pub fn set_auth_mode(&mut self, mode: AuthMode, cx: &mut Context<Self>) {
+        if self.auth_in_progress {
+            return;
+        }
         self.auth_mode = mode;
         self.set_toast(None, cx);
         self.invite_code_input.clear();
@@ -312,6 +315,9 @@ impl AppState {
     }
 
     pub fn submit_auth(&mut self, cx: &mut Context<Self>) {
+        if self.auth_in_progress {
+            return;
+        }
         let Some(api) = self.account_api.clone() else {
             self.set_toast(
                 Some(
@@ -324,72 +330,104 @@ impl AppState {
             cx.notify();
             return;
         };
-        let result = match self.auth_mode {
-            AuthMode::Register => self.register_account(&api),
-            AuthMode::Login => self.login_account(&api),
-        };
-        match result {
-            Ok((identity, session)) => {
-                if self.auth_mode == AuthMode::Login && self.remember_me {
-                    let username = self.username_input.trim().to_string();
-                    let password = Zeroizing::new(self.password_input.clone());
-                    cx.spawn(async move |this, cx| {
-                        let task = cx.update(|cx| {
-                            cx.write_credentials(
-                                AUTH_CREDENTIAL_URL,
-                                &username,
-                                password.as_bytes(),
-                            )
-                        });
-                        let result = task.await;
-                        this.update(cx, |state, cx| {
-                            if let Err(error) = result {
-                                state.set_toast(
-                                    Some(format!(
-                                        "Signed in, but could not save credentials: {error}"
-                                    )),
-                                    cx,
-                                );
-                            }
-                            cx.notify();
-                        })
-                    })
-                    .detach();
-                }
-                let identity_was_created = session.identity_missing;
-                self.enter_identity(identity, session.access_token, cx);
-                if identity_was_created && self.message.is_none() {
-                    self.set_toast(Some(
-                        "This account had no stored identity key. A new key was generated and saved to MySQL."
-                            .into(),
-                    ), cx);
-                }
-                self.startup_error = None;
-            }
-            Err(error) => self.set_toast(Some(error), cx),
-        }
+        let mode = self.auth_mode;
+        let identity_service = self.identity_service;
+        let username = self.username_input.trim().to_string();
+        let display_name = self.display_name_input.clone();
+        let invite_code = self.invite_code_input.clone();
+        let password = Zeroizing::new(self.password_input.clone());
+        let remember_me = mode == AuthMode::Login && self.remember_me;
+        let credential_username = username.clone();
+        let credential_password = password.clone();
+        self.auth_in_progress = true;
         self.password_input.clear();
         cx.notify();
+
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let result = background
+                .spawn(async move {
+                    match mode {
+                        AuthMode::Register => Self::register_account(
+                            &identity_service,
+                            &api,
+                            &username,
+                            &display_name,
+                            &password,
+                            &invite_code,
+                        ),
+                        AuthMode::Login => {
+                            Self::login_account(&identity_service, &api, &username, &password)
+                        }
+                    }
+                })
+                .await;
+
+            let _ = this.update(cx, |state, cx| {
+                state.auth_in_progress = false;
+                match result {
+                    Ok((identity, session)) => {
+                        if remember_me {
+                            let username = credential_username;
+                            let password = credential_password;
+                            cx.spawn(async move |this, cx| {
+                                let task = cx.update(|cx| {
+                                    cx.write_credentials(
+                                        AUTH_CREDENTIAL_URL,
+                                        &username,
+                                        password.as_bytes(),
+                                    )
+                                });
+                                let result = task.await;
+                                this.update(cx, |state, cx| {
+                                    if let Err(error) = result {
+                                        state.set_toast(
+                                            Some(format!(
+                                                "Signed in, but could not save credentials: {error}"
+                                            )),
+                                            cx,
+                                        );
+                                    }
+                                    cx.notify();
+                                })
+                            })
+                            .detach();
+                        }
+                        let identity_was_created = session.identity_missing;
+                        state.enter_identity(identity, session.access_token, cx);
+                        if identity_was_created && state.message.is_none() {
+                            state.set_toast(Some(
+                                "This account had no stored identity key. A new key was generated and saved to MySQL."
+                                    .into(),
+                            ), cx);
+                        }
+                        state.startup_error = None;
+                    }
+                    Err(error) => state.set_toast(Some(error), cx),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
-    pub(super) fn register_account(
-        &self,
+    fn register_account(
+        identity_service: &IdentityService,
         api: &AccountApiClient,
+        username: &str,
+        display_name: &str,
+        password: &str,
+        invite_code: &str,
     ) -> Result<(UnlockedIdentity, AccountSession), String> {
-        let (identity, record) = self
-            .identity_service
-            .create(
-                &self.username_input,
-                &self.display_name_input,
-                &self.password_input,
-            )
+        let (identity, record) = identity_service
+            .create(username, display_name, password)
             .map_err(|error| error.to_string())?;
         let session = api
             .register(
                 &record.username,
                 &record.display_name,
-                &self.password_input,
-                &self.invite_code_input,
+                password,
+                invite_code,
                 &record,
             )
             .map_err(|error| error.message)?;
@@ -402,15 +440,17 @@ impl AppState {
         Ok((identity, session))
     }
 
-    pub(super) fn login_account(
-        &self,
+    fn login_account(
+        identity_service: &IdentityService,
         api: &AccountApiClient,
+        username: &str,
+        password: &str,
     ) -> Result<(UnlockedIdentity, AccountSession), String> {
         let mut session = api
-            .login(self.username_input.trim(), &self.password_input)
+            .login(username, password)
             .map_err(|error| error.message)?;
         let mut identity = if let Some(record) = session.identity.as_ref() {
-            match self.identity_service.unlock(record, &self.password_input) {
+            match identity_service.unlock(record, password) {
                 Ok(identity) => identity,
                 Err(error) => {
                     let _ = api.logout(&session.access_token);
@@ -418,10 +458,10 @@ impl AppState {
                 }
             }
         } else if session.identity_missing {
-            let (identity, record) = match self.identity_service.create(
+            let (identity, record) = match identity_service.create(
                 &session.account.username,
                 &session.account.display_name,
-                &self.password_input,
+                password,
             ) {
                 Ok(identity) => identity,
                 Err(error) => {
@@ -447,7 +487,7 @@ impl AppState {
                 "The encrypted identity stored for this account is corrupted.".into()
             }));
         };
-        sync_account_profile(&self.identity_service, &mut identity, &session.account).map_err(
+        sync_account_profile(identity_service, &mut identity, &session.account).map_err(
             |error| {
                 let _ = api.logout(&session.access_token);
                 error
@@ -463,124 +503,190 @@ impl AppState {
         cx: &mut Context<Self>,
     ) {
         let account_id = identity.user.id.clone();
-        let chat_store = LocalChatStore::open(&account_id, identity.private_key());
-        let mut device_registration_error = None;
+        let update_token = token.clone();
+        let identity_for_local = identity.clone();
+        let identity_for_device = identity.clone();
         self.device_enrollment_status = None;
         self.device_pairing_code = None;
         self.registered_devices.clear();
         self.pending_device_enrollments.clear();
+        self.set_toast(None, cx);
         if let Some(api) = self.account_api.clone() {
-            let base_api = api.without_device_auth();
-            self.account_api = Some(base_api.clone());
-            if let Ok(store) = &chat_store {
-                match store.device_identity() {
-                    Ok(device) => match base_api.register_device(
-                        &token,
-                        &device,
-                        &account_id,
-                        identity.private_key(),
-                    ) {
-                        Ok(device_api) => self.account_api = Some(device_api),
-                        Err(error)
-                            if error.status == Some(403)
-                                && error.message
-                                    == "An existing trusted device must authorize this installation." =>
-                        {
-                            match base_api.begin_device_enrollment(&token, &device, &account_id) {
-                                Ok(status) => {
-                                    if status.state == "authorized" {
-                                        match base_api.register_device(
-                                            &token,
-                                            &device,
-                                            &account_id,
-                                            identity.private_key(),
-                                        ) {
-                                            Ok(device_api) => {
-                                                self.account_api = Some(device_api);
-                                                self.device_enrollment_status = None;
-                                            }
-                                            Err(error) => {
-                                                device_registration_error = Some(error.message);
-                                            }
-                                        }
-                                    } else {
-                                        if let Ok((signing_key, encryption_key)) =
-                                            crate::services::device_enrollment::device_public_keys(
-                                                &device,
-                                            )
-                                        {
-                                            self.device_pairing_code = Some(pairing_code(
-                                                &account_id,
-                                                &status.request_id,
-                                                &device.id,
-                                                &signing_key,
-                                                &encryption_key,
-                                                &device.enrollment_nonce,
-                                            ));
-                                        }
-                                        self.device_enrollment_status = Some(status);
-                                        device_registration_error = Some(
-                                            "This installation is awaiting approval from a trusted device. Compare the pairing code in Settings > Devices."
-                                                .into(),
-                                        );
-                                    }
-                                }
-                                Err(enrollment_error) => {
-                                    device_registration_error = Some(enrollment_error.message)
-                                }
-                            }
-                        }
-                        Err(error) => device_registration_error = Some(error.message),
-                    },
-                    Err(error) => device_registration_error = Some(error),
-                }
-            }
+            self.account_api = Some(api.without_device_auth());
         }
         self.current_user = Some(identity.user.clone());
         self.profile_name_input = identity.user.name.clone();
         self.identity = Some(identity);
         self.session_token = Some(token);
-        self.set_toast(device_registration_error, cx);
-        self.local_chat = match chat_store {
-            Ok(store) => Some(store),
-            Err(error) => {
-                self.set_toast(Some(error), cx);
-                None
-            }
-        };
-        self.current_device_id = match &self.local_chat {
-            Some(store) => match store.device_identity() {
-                Ok(device) => Some(device.id),
-                Err(error) => {
-                    self.set_toast(Some(error), cx);
-                    None
-                }
-            },
-            None => None,
-        };
+        self.local_chat = None;
+        self.current_device_id = None;
         self.friends.clear();
         self.incoming_identity_verification_requests.clear();
         self.conversations.clear();
         self.messages.clear();
-        if let Some(store) = &self.local_chat {
-            match (store.conversations(), store.messages()) {
-                (Ok(conversations), Ok(messages)) => {
-                    self.conversations = conversations;
-                    self.messages = messages;
-                }
-                (Err(error), _) | (_, Err(error)) => self.set_toast(Some(error), cx),
-            }
-        }
         self.selected_conversation = None;
-        let device_authorized = self
-            .account_api
-            .as_ref()
-            .is_some_and(AccountApiClient::has_device_auth);
-        if device_authorized {
-            self.load_remote_data(true, cx);
-            self.start_incoming_message_poll(cx);
-        }
         self.navigation.navigate(Route::Friends);
         cx.notify();
+
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let local_data = background
+                .spawn(async move {
+                    let store =
+                        LocalChatStore::open(&account_id, identity_for_local.private_key())?;
+                    let device_id = store.device_identity().map(|device| device.id);
+                    let conversations_and_messages = match (store.conversations(), store.messages())
+                    {
+                        (Ok(conversations), Ok(messages)) => Ok((conversations, messages)),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    };
+                    Ok((store, device_id, conversations_and_messages))
+                })
+                .await;
+            let _ = this.update(cx, |state, cx| {
+                if state.session_token.as_deref() != Some(&update_token) {
+                    return;
+                }
+                let (store, device_id, conversations_and_messages) = match local_data {
+                    Ok(data) => data,
+                    Err(error) => {
+                        state.set_toast(Some(error), cx);
+                        cx.notify();
+                        return;
+                    }
+                };
+                state.local_chat = Some(store.clone());
+                match device_id {
+                    Ok(device_id) => state.current_device_id = Some(device_id),
+                    Err(error) => state.set_toast(Some(error), cx),
+                }
+                match conversations_and_messages {
+                    Ok((conversations, messages)) => {
+                        state.conversations = conversations;
+                        state.messages = messages;
+                    }
+                    Err(error) => state.set_toast(Some(error), cx),
+                }
+
+                if let Some(api) = state.account_api.clone() {
+                    let api = api.without_device_auth();
+                    state.account_api = Some(api.clone());
+                    let token = update_token.clone();
+                    let registration_update_token = token.clone();
+                    let identity = identity_for_device.clone();
+                    let account_id = identity.user.id.clone();
+                    let background = cx.background_executor().clone();
+                    cx.spawn(async move |this, cx| {
+                        let result = background
+                            .spawn(async move {
+                                register_identity_device(
+                                    api,
+                                    &token,
+                                    &store,
+                                    &account_id,
+                                    &identity,
+                                )
+                            })
+                            .await;
+                        let _ = this.update(cx, |state, cx| {
+                            if state.session_token.as_deref() != Some(&registration_update_token) {
+                                return;
+                            }
+                            let (api, error, enrollment_status, pairing_code) = result;
+                            state.account_api = Some(api);
+                            state.device_enrollment_status = enrollment_status;
+                            state.device_pairing_code = pairing_code;
+                            if let Some(error) = error {
+                                state.set_toast(Some(error), cx);
+                            }
+                            if state
+                                .account_api
+                                .as_ref()
+                                .is_some_and(AccountApiClient::has_device_auth)
+                            {
+                                state.load_remote_data(true, cx);
+                                state.start_incoming_message_poll(cx);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
+}
+
+fn register_identity_device(
+    base_api: AccountApiClient,
+    token: &str,
+    store: &LocalChatStore,
+    account_id: &str,
+    identity: &UnlockedIdentity,
+) -> (
+    AccountApiClient,
+    Option<String>,
+    Option<DeviceEnrollmentStatus>,
+    Option<String>,
+) {
+    let mut device_api = base_api.clone();
+    let mut registration_error = None;
+    let mut enrollment_status = None;
+    let mut pairing_code_value = None;
+    match store.device_identity() {
+        Ok(device) => {
+            match base_api.register_device(token, &device, account_id, identity.private_key()) {
+                Ok(registered_api) => device_api = registered_api,
+                Err(error)
+                    if error.status == Some(403)
+                        && error.message
+                            == "An existing trusted device must authorize this installation." =>
+                {
+                    match base_api.begin_device_enrollment(token, &device, account_id) {
+                        Ok(status) if status.state == "authorized" => {
+                            match base_api.register_device(
+                                token,
+                                &device,
+                                account_id,
+                                identity.private_key(),
+                            ) {
+                                Ok(registered_api) => device_api = registered_api,
+                                Err(error) => registration_error = Some(error.message),
+                            }
+                        }
+                        Ok(status) => {
+                            if let Ok((signing_key, encryption_key)) =
+                                crate::services::device_enrollment::device_public_keys(&device)
+                            {
+                                pairing_code_value = Some(pairing_code(
+                                    account_id,
+                                    &status.request_id,
+                                    &device.id,
+                                    &signing_key,
+                                    &encryption_key,
+                                    &device.enrollment_nonce,
+                                ));
+                            }
+                            enrollment_status = Some(status);
+                            registration_error = Some(
+                            "This installation is awaiting approval from a trusted device. Compare the pairing code in Settings > Devices."
+                                .into(),
+                        );
+                        }
+                        Err(error) => registration_error = Some(error.message),
+                    }
+                }
+                Err(error) => registration_error = Some(error.message),
+            }
+        }
+        Err(error) => registration_error = Some(error),
+    }
+    (
+        device_api,
+        registration_error,
+        enrollment_status,
+        pairing_code_value,
+    )
 }

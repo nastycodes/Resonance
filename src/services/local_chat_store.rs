@@ -341,7 +341,11 @@ impl LocalChatStore {
             .data
             .lock()
             .map_err(|_| "Local chat history is unavailable.".to_string())?;
-        let Some(message) = data.messages.iter_mut().find(|message| message.id == message_id) else {
+        let Some(message) = data
+            .messages
+            .iter_mut()
+            .find(|message| message.id == message_id)
+        else {
             return Ok(());
         };
         if message.queue_sequence == Some(queue_sequence) {
@@ -2029,11 +2033,7 @@ impl LocalChatStore {
         changed |= message.delivery_state != previous_message_state
             || message.delivered_at != previous_delivered_at
             || message.read_at != previous_read_at;
-        if changed {
-            self.persist(&data)
-        } else {
-            Ok(())
-        }
+        if changed { self.persist(&data) } else { Ok(()) }
     }
 
     pub fn retry_group_delivery(&self, message_id: &str) -> Result<(), String> {
@@ -2102,11 +2102,7 @@ impl LocalChatStore {
             message.read_at = Some(read_at);
             changed = true;
         }
-        if changed {
-            self.persist(&data)
-        } else {
-            Ok(())
-        }
+        if changed { self.persist(&data) } else { Ok(()) }
     }
 
     pub fn mark_delivered(&self, message_id: &str) -> Result<String, String> {
@@ -2500,8 +2496,10 @@ mod tests {
 
     #[test]
     fn unchanged_group_delivery_does_not_rewrite_chat_history() {
-        let directory = std::env::temp_dir()
-            .join(format!("resonance-group-delivery-noop-{}", new_id().unwrap()));
+        let directory = std::env::temp_dir().join(format!(
+            "resonance-group-delivery-noop-{}",
+            new_id().unwrap()
+        ));
         let path = directory.join("local.json");
         let identity_key = b"group delivery identity key";
         let owner = User::new(&"1".repeat(64), "owner", "Owner", "O", 0x123456, "Online");
@@ -2520,12 +2518,7 @@ mod tests {
         );
         message.delivery_state = "relayed".into();
         store
-            .add_group_message(
-                message,
-                group_id,
-                "Group",
-                &[owner, first, second],
-            )
+            .add_group_message(message, group_id, "Group", &[owner, first, second])
             .unwrap();
         let delivery = store.messages().unwrap()[0].group_deliveries[0].clone();
         store

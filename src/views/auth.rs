@@ -104,7 +104,11 @@ pub fn render(
     if let Some(error) = state.startup_error.as_deref() {
         form = form.child(message_box(error, true));
     }
-    let button_text = if registering {
+    let button_text = if state.auth_in_progress && registering {
+        "Creating account..."
+    } else if state.auth_in_progress {
+        "Signing in..."
+    } else if registering {
         "Create account"
     } else {
         "Sign in"
@@ -134,8 +138,12 @@ pub fn render(
                 .child(
                     div()
                         .id("auth-switch")
-                        .cursor_pointer()
-                        .text_color(rgb(colors::ACCENT))
+                        .when(!state.auth_in_progress, |this| this.cursor_pointer())
+                        .text_color(rgb(if state.auth_in_progress {
+                            colors::MUTED
+                        } else {
+                            colors::ACCENT
+                        }))
                         .focus_visible(|style| style.border_color(rgb(colors::ACCENT)))
                         .tab_index(0)
                         .child(if registering {

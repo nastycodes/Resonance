@@ -92,7 +92,6 @@ pub fn clear_icon(icon_name: IconName) -> Div {
     icon_button_with_color(icon_name, colors::MUTED, colors::SIDEBAR, colors::SIDEBAR)
 }
 
-
 pub fn composer_icon(icon_name: IconName) -> Div {
     div()
         .size(px(spacing::COMPOSER_ACTION_TARGET))

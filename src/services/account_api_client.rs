@@ -1021,7 +1021,9 @@ impl AccountApiClient {
             .map_err(request_error)?;
         let status = response.status();
         if status.is_success() {
-            let body = response.json::<serde_json::Value>().map_err(request_error)?;
+            let body = response
+                .json::<serde_json::Value>()
+                .map_err(request_error)?;
             body.get("queue_sequence")
                 .and_then(|value| value.as_u64())
                 .ok_or_else(|| AccountApiError {

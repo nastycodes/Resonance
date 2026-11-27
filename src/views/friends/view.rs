@@ -81,13 +81,18 @@ pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> 
                                     cx.stop_propagation();
                                     state.start_voice_call_with_friend(&call_peer_id, cx)
                                 }))
-                                .on_key_down(cx.listener(move |state, event: &KeyDownEvent, _, cx| {
-                                    let key = event.keystroke.key.as_str();
-                                    if key.eq_ignore_ascii_case("enter") || key == "space" {
-                                        cx.stop_propagation();
-                                        state.start_voice_call_with_friend(&call_key_peer_id, cx);
-                                    }
-                                })),
+                                .on_key_down(cx.listener(
+                                    move |state, event: &KeyDownEvent, _, cx| {
+                                        let key = event.keystroke.key.as_str();
+                                        if key.eq_ignore_ascii_case("enter") || key == "space" {
+                                            cx.stop_propagation();
+                                            state.start_voice_call_with_friend(
+                                                &call_key_peer_id,
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                )),
                         )
                         .child(
                             button::clear_icon(IconName::Identity)
@@ -101,13 +106,18 @@ pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> 
                                     cx.stop_propagation();
                                     state.open_identity_verification(&verify_peer_id, cx)
                                 }))
-                                .on_key_down(cx.listener(move |state, event: &KeyDownEvent, _, cx| {
-                                    let key = event.keystroke.key.as_str();
-                                    if key.eq_ignore_ascii_case("enter") || key == "space" {
-                                        cx.stop_propagation();
-                                        state.open_identity_verification(&verify_key_peer_id, cx);
-                                    }
-                                })),
+                                .on_key_down(cx.listener(
+                                    move |state, event: &KeyDownEvent, _, cx| {
+                                        let key = event.keystroke.key.as_str();
+                                        if key.eq_ignore_ascii_case("enter") || key == "space" {
+                                            cx.stop_propagation();
+                                            state.open_identity_verification(
+                                                &verify_key_peer_id,
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                )),
                         )
                         .child(
                             button::destructive_icon_button(IconName::Trash)
@@ -121,16 +131,20 @@ pub fn render(state: &AppState, window: &Window, cx: &mut Context<AppState>) -> 
                                         cx,
                                     )
                                 }))
-                                .on_key_down(cx.listener(move |state, event: &KeyDownEvent, _, cx| {
-                                    let key = event.keystroke.key.as_str();
-                                    if key.eq_ignore_ascii_case("enter") || key == "space" {
-                                        cx.stop_propagation();
-                                        state.request_confirmation(
-                                            PendingConfirmation::RemoveFriend(remove_key_peer_id.clone()),
-                                            cx,
-                                        );
-                                    }
-                                })),
+                                .on_key_down(cx.listener(
+                                    move |state, event: &KeyDownEvent, _, cx| {
+                                        let key = event.keystroke.key.as_str();
+                                        if key.eq_ignore_ascii_case("enter") || key == "space" {
+                                            cx.stop_propagation();
+                                            state.request_confirmation(
+                                                PendingConfirmation::RemoveFriend(
+                                                    remove_key_peer_id.clone(),
+                                                ),
+                                                cx,
+                                            );
+                                        }
+                                    },
+                                )),
                         ),
                 ),
         );
