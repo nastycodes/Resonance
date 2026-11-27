@@ -1,0 +1,33 @@
+# Rust build output
+/target/
+
+# Release packages
+/dist/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local databases, exports, backups, and logs
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.bak
+*.tmp
+*.log
+
+# Editor and Windows operating-system files
+.idea/
+.vs/
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*.orig
+*.rej
