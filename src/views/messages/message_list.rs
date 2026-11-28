@@ -804,14 +804,14 @@ fn conversation_call_panel(
     conversation: &Conversation,
     cx: &mut Context<AppState>,
 ) -> Option<impl IntoElement> {
-    if let Some(incoming) = state
+    if state
         .incoming_voice_call
         .as_ref()
         .filter(|call| call.conversation_id == conversation.id)
+        .is_some()
     {
-        let caller_name = incoming.caller_name.clone();
         return Some(
-            card::elevated()
+            card::unrounded()
                 .id("conversation-incoming-voice-call")
                 .flex()
                 .items_center()
@@ -830,12 +830,6 @@ fn conversation_call_panel(
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(rgb(colors::TEXT))
                                 .child("Incoming voice call"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(rgb(colors::MUTED))
-                                .child(format!("{caller_name} is calling")),
                         ),
                 )
                 .child(
@@ -948,7 +942,7 @@ fn conversation_call_panel(
         .flex_col()
         .gap_3()
         .px_5()
-        .py_4()
+        .py_3()
         .child(call_header);
 
     Some(panel)
